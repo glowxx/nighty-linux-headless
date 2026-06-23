@@ -188,6 +188,28 @@ def enforce_web(appdata):
     return "; ".join(msgs)
 
 
+def enforce_rpc_off(appdata):
+    """Headless hardening: keep Nighty's Rich Presence / status-rotator profile
+    from running at startup. A headless selfbot has no reason to broadcast a
+    rotating custom status or Rich Presence, and that presence machinery is part
+    of what keeps the bot's event loop busy. (The biggest offender — the lyrics
+    fetch the presence task makes — is neutralised at the network level; see the
+    lrclib blackhole in install.sh.)"""
+    path = os.path.join(appdata, "data", "profile.json")
+    d = _load(path)
+    if not isinstance(d, dict):
+        return "skip (no profile.json)"
+    changed = False
+    for k in ("running", "run_at_startup"):
+        if d.get(k) is not False:
+            d[k] = False
+            changed = True
+    if changed:
+        _save(path, d)
+        return "Rich Presence / status-rotator disabled"
+    return "ok (already off)"
+
+
 def main():
     appdata = find_appdata()
     if not appdata:
@@ -196,6 +218,7 @@ def main():
     print("[enforce] appdata:", appdata)
     print("[enforce] notifications:", enforce_notifications(appdata))
     print("[enforce] web:", enforce_web(appdata))
+    print("[enforce] presence:", enforce_rpc_off(appdata))
     return 0
 
 
