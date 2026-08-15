@@ -147,7 +147,9 @@ Run `bash scripts/add_account.sh` on the host. It re-opens the same wizard retit
 
 ## Updating Nighty
 
-If new fixes or features are pushed to this repository, you can update your deployment instantly without losing any data. This seamlessly detects your deployment method, pulls the latest changes, updates dependencies, and restarts your bot.
+If new fixes or features are pushed to this repository, you can update your deployment instantly without losing any data! 
+
+**The updater universally supports both Docker and Bare Metal deployments.** It will seamlessly detect which method you used, safely pull the latest changes, cleanly update any dependencies, and restart your container or background service automatically.
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/glowxx/nighty-linux-headless/main/scripts/update.sh)
