@@ -50,12 +50,7 @@ if [ ! -f "$NIGHTY_EXE" ]; then
     exit 1
 fi
 
-if [ -d "$NIGHTY_STUB" ]; then
-    echo "ERROR: $NIGHTY_STUB was mounted as a directory." >&2
-    echo "Docker auto-created a directory because Nighty_stub.exe was missing on host before compose up." >&2
-    echo "Please remove the directory on your host, run 'touch Nighty_stub.exe', and re-run." >&2
-    exit 1
-fi
+
 
 echo "=== Running pre-flight setup (install.sh) ==="
 # install.sh handles missing deps, repacking, and /etc/hosts modifications.

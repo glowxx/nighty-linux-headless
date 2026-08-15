@@ -18,6 +18,7 @@ services:
       PGID: "${PGID:-1000}"
       NIGHTY_BOX64_PROFILE: "${NIGHTY_BOX64_PROFILE:-balanced}"
       NIGHTY_DIAG_DIR: "/app/diagnostics"
+      NIGHTY_STUB: "/data/Nighty_stub.exe"
       PYTHONIOENCODING: "${PYTHONIOENCODING:-utf-8}"
       SSL_CERT_FILE: "/etc/ssl/certs/ca-certificates.crt"
       SSL_CERT_DIR: "/etc/ssl/certs"
@@ -32,8 +33,6 @@ services:
     volumes:
       # Mount your Nighty.exe (read-only)
       - ./Nighty.exe:/app/Nighty.exe:ro
-      # Mount repacked Nighty_stub.exe to root project directory for easy access & swapping
-      - ./Nighty_stub.exe:/app/Nighty_stub.exe
       # Persist configuration and prefixes
       - ./data:/data
       # Mount dist directory for extensions persistence and write access

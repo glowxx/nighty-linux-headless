@@ -18,9 +18,10 @@ DIR="$(pwd)"
 print_header "DOCKER DEPLOYMENT PROCESS"
 
 if [ ! -f "Nighty.exe" ]; then
-  if [ -f "nighty.exe" ]; then
-    # Auto-fix lowercase uploads (Linux is case-sensitive)
-    mv nighty.exe Nighty.exe
+  # Auto-fix any capitalization errors (Linux is case-sensitive, Windows is not)
+  MISTAKEN_FILE=$(find . -maxdepth 1 -iname "nighty.exe" | head -n 1)
+  if [ -n "$MISTAKEN_FILE" ]; then
+    mv "$MISTAKEN_FILE" Nighty.exe
   else
     print_error "Nighty.exe not found!"
     printf "%sPlease upload your licensed 'Nighty.exe' to: %s%s%s\n" "$Y" "$B" "$DIR" "$N"
@@ -31,11 +32,15 @@ fi
 print_success "Nighty.exe found!"
 
 mkdir -p docker-secrets data diagnostics
+# Clean up any bad directories Docker previously auto-created on the host
 if [ -d "Nighty_stub.exe" ]; then
   print_step "Fixing directory created by Docker for Nighty_stub.exe..."
   rm -rf Nighty_stub.exe 2>/dev/null || sudo rm -rf Nighty_stub.exe 2>/dev/null || true
 fi
-[ -f "Nighty_stub.exe" ] || touch Nighty_stub.exe
+# Clean up any empty files created by older versions of this script
+if [ ! -s "Nighty_stub.exe" ] && [ -f "Nighty_stub.exe" ]; then
+  rm -f "Nighty_stub.exe"
+fi
 chmod 700 docker-secrets
 
 read_secret_if_missing() {
@@ -75,6 +80,9 @@ docker compose down 2>/dev/null || true
 
 print_step "Building new Docker image (This WILL take a few minutes, please be patient)..."
 docker compose build
+
+# Proactively clean up dangling images from previous builds to prevent VPS disk fill-up
+docker image prune -f --filter "label=com.docker.compose.project=nighty-linux-headless" 2>/dev/null || docker image prune -f 2>/dev/null || true
 
 print_step "Starting new container in background..."
 docker compose up -d

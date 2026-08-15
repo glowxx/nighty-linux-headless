@@ -42,7 +42,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     stashed=1
   fi
 
-  if ! git pull origin main; then
+  if ! git pull --no-edit origin main; then
       warn "Failed to pull updates from GitHub. Check your network or git status."
       if [ "$stashed" -eq 1 ]; then git stash pop >/dev/null 2>&1 || true; fi
       exit 1
