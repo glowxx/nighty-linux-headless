@@ -1,0 +1,32 @@
+#!/sbin/openrc-run
+
+# Reference service for Nighty headless.
+# Replace <USER> and <REPO_DIR>, then install as /etc/init.d/nighty.
+# The supported installer path is: bash scripts/run.sh autostart
+
+name="nighty"
+description="Nighty headless (backend + Web UI bridge)"
+
+command="/usr/bin/env"
+command_args="bash <REPO_DIR>/scripts/run.sh --run"
+command_user="<USER>"
+directory="<REPO_DIR>"
+pidfile="/run/nighty.pid"
+
+# supervise-daemon keeps the complete run.sh stack alive if it exits.
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+
+output_log="<REPO_DIR>/diagnostics/service.log"
+error_log="<REPO_DIR>/diagnostics/service.log"
+
+# Ensure the diagnostics directory exists before OpenRC opens the log files.
+start_pre() {
+    checkpath -d -m 0750 -o "<USER>" "<REPO_DIR>/diagnostics"
+}
+
+depend() {
+    need net
+    after firewall
+}
