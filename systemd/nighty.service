@@ -25,6 +25,16 @@ Restart=always
 RestartSec=5
 SuccessExitStatus=23
 RestartPreventExitStatus=23
+# Kill the whole cgroup on stop (this is the systemd default; stated explicitly
+# because the stack is a tree of Xvfb + bridge + wine + backend processes).
+KillMode=control-group
+# OOM backstop: if the stack's memory climbs, let the kernel OOM-kill the cgroup
+# so Restart=always brings it back cleanly, rather than the host thrashing.
+# NOTE: the "%" form needs systemd v240+ AND the unified cgroup v2 hierarchy
+# (default on current distros). On older systemd it is ignored (logged, unit
+# still starts); on a cgroup-v1 host it may not be enforced. Use an absolute
+# value (e.g. MemoryMax=2G) if your host predates that.
+MemoryMax=90%
 
 [Install]
 WantedBy=multi-user.target

@@ -495,6 +495,7 @@ run_stack() {
 
   cleanup() {
     log "Shutdown signal received. Stopping stack cleanly..."
+    [ -n "${BACKEND_LOOP_PID:-}" ] && kill -15 "$BACKEND_LOOP_PID" 2>/dev/null || true
     [ -n "${GUARD_PID:-}" ] && kill -15 "$GUARD_PID" 2>/dev/null || true
     [ -n "${BRIDGE_LOOP_PID:-}" ] && kill -15 "$BRIDGE_LOOP_PID" 2>/dev/null || true
     pkill -15 -f "bridge.py" 2>/dev/null || true

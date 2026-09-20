@@ -64,15 +64,37 @@ import sys, os, threading, time, traceback, queue
 _taskq = queue.Queue()
 _PORT = int(os.environ.get("NIGHTY_STUB_PORT", "8765"))
 _LOG = os.environ.get("NIGHTY_STUB_LOG", "")
+_logstate = {"fh": None, "last": None, "repeats": 0}
+_loglock = threading.Lock()
+def _logfh():
+    if _logstate["fh"] is None and _LOG:
+        try: _logstate["fh"] = open(_LOG, "a", encoding="utf-8", errors="replace")
+        except Exception: _logstate["fh"] = False
+    return _logstate["fh"] or None
+def _logemit(line):
+    try: print(line, flush=True)
+    except Exception: pass
+    fh = _logfh()
+    if fh:
+        try:
+            fh.write(line + "\n"); fh.flush()
+        except Exception: pass
 def _log(*a):
     msg = "[STUBWV] " + " ".join(str(x) for x in a)
-    try: print(msg, flush=True)
-    except Exception: pass
-    if _LOG:
-        try:
-            with open(_LOG, "a", encoding="utf-8", errors="replace") as f:
-                f.write(msg + "\n")
-        except Exception: pass
+    # Hold the lock across the emit too: the stub is heavily multi-threaded
+    # (ctl handlers, async workers), so releasing before writing would let two
+    # threads interleave lines and misattribute the "repeated N times" summary,
+    # and would race two opens of the log file handle.
+    with _loglock:
+        if msg == _logstate["last"]:
+            _logstate["repeats"] += 1
+            return
+        repeated = _logstate["repeats"]
+        _logstate["last"] = msg
+        _logstate["repeats"] = 0
+        if repeated:
+            _logemit("[STUBWV] (previous line repeated %d more times)" % repeated)
+        _logemit(msg)
 
 class WebViewException(Exception): pass
 class JavascriptException(Exception): pass
@@ -81,11 +103,23 @@ token = "stub-token"
 windows = []
 settings = {'ALLOW_DOWNLOADS': False,'ALLOW_FILE_URLS': True,'OPEN_EXTERNAL_LINKS_IN_BROWSER': True,'OPEN_DEVTOOLS_IN_DEBUG': False,'REMOTE_DEBUGGING_PORT': None}
 _JS_API = []
+try:
+    _EV_CAP = int(os.environ.get("NIGHTY_STUB_EVENT_CAP", "2000") or "2000")
+except ValueError:
+    _EV_CAP = 2000  # a typo'd value must not crash stub import
+if _EV_CAP < 0:
+    _EV_CAP = 2000  # negatives would read as "unbounded"; fall back to the default
 _events = []
+_evbase = 0
 _evlock = threading.Lock()
 def _emit(_t, **kw):
+    global _evbase
     with _evlock:
-        kw['type'] = _t; kw['seq'] = len(_events); _events.append(kw)
+        kw['type'] = _t; kw['seq'] = _evbase + len(_events); _events.append(kw)
+        if _EV_CAP > 0 and len(_events) > _EV_CAP:
+            drop = len(_events) - _EV_CAP
+            del _events[:drop]
+            _evbase += drop
 
 class _Event:
     def __init__(self, name): self._name=name; self._handlers=[]
@@ -121,7 +155,7 @@ class Window:
         try:
             s=str(script); ss=s if len(s)<160 else s[:160]+"...(%d)"%len(s)
             _log("evaluate_js:", ss.replace(chr(10)," "))
-            _emit('evaluate_js', uid=self.uid, script=s)
+            _emit('evaluate_js', uid=self.uid, script=ss)
         except Exception: pass
         if callback:
             try: callback(None)
@@ -129,7 +163,7 @@ class Window:
         return None
     def run_js(self, script,*a,**k): return self.evaluate_js(script)
     def load_url(self, url): _log("load_url:", url); self.real_url=url; _emit('load_url', uid=self.uid, url=url)
-    def load_html(self, content, base_uri=''): _log("load_html len=%d" % len(content)); _emit('load_html', uid=self.uid, html=content)
+    def load_html(self, content, base_uri=''): _log("load_html len=%d" % len(content)); _emit('load_html', uid=self.uid, html_len=len(content))
     def get_current_url(self): return self.real_url
     def get_elements(self, selector): _log("get_elements", selector); return []
     def set_title(self, t): self.title=t
@@ -178,7 +212,10 @@ def _start_ctl():
                 q=parse_qs(urlparse(self.path).query)
                 try: since=int(q.get("since",["0"])[0])
                 except Exception: since=0
-                with _evlock: evs=list(_events[since:]); total=len(_events)
+                with _evlock:
+                    start = since - _evbase
+                    if start < 0: start = 0
+                    evs = list(_events[start:]); total = _evbase + len(_events)
                 cur = windows[-1].real_url if windows else None
                 return self._send({"events":evs,"total":total,"current_url":cur,
                                    "windows":[{"uid":w.uid,"title":w.title,"url":w.real_url} for w in windows]})
@@ -252,7 +289,7 @@ def start(func=None, args=None, gui=None, debug=False, http_server=False, http_p
     _log("start() main dispatch loop ready (api calls run on this thread)")
     while True:
         try:
-            fn, a, k, box, done = _taskq.get(timeout=2)
+            fn, a, k, box, done = _taskq.get()
         except Exception:
             continue
         try:

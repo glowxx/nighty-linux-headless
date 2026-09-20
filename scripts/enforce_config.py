@@ -503,6 +503,10 @@ def _mirror_appended_tail(src, dst):
     source_size = os.path.getsize(src)
     mirror_size = os.path.getsize(dst) if os.path.exists(dst) else 0
     source_was_truncated = source_size < mirror_size
+    # When the sizes match we still confirm the trailing window matches before
+    # returning: an in-place rewrite to the same length would otherwise leave the
+    # mirror silently stale. The check reads at most 4 KiB from local files, so
+    # it stays cheap on the common no-growth tick.
     if source_was_truncated or not _mirror_continues_source(src, dst, mirror_size):
         shutil.copyfile(src, dst)
         return

@@ -14,6 +14,24 @@ import enforce_config  # noqa: E402
 
 
 class EnforceConfigTests(unittest.TestCase):
+    def _set_env(self, **values):
+        """Set os.environ keys for the duration of one test, restore afterward,
+        and neutralize any real .env on disk so env() reflects these values."""
+        for key, value in values.items():
+            prev = os.environ.get(key)
+            os.environ[key] = value
+            self.addCleanup(self._restore_env, key, prev)
+        prev_cache = dict(enforce_config._ENV_CACHE)
+        enforce_config._ENV_CACHE.update(path="__test__", mtime=None, vals={})
+        self.addCleanup(enforce_config._ENV_CACHE.update, prev_cache)
+
+    @staticmethod
+    def _restore_env(key, prev):
+        if prev is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prev
+
     def test_enforce_web_backup_and_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             appdata = tmp
@@ -92,8 +110,12 @@ class EnforceConfigTests(unittest.TestCase):
             with open(big_log, "wb") as f:
                 f.write(b"A" * (12 * 1024 * 1024))
 
-            # Set NIGHTY_HOME to temp dir
-            os.environ["NIGHTY_HOME"] = appdata
+            # Point both the diagnostics dir and NIGHTY_HOME at the temp tree.
+            # NIGHTY_DIAG_DIR is read straight from os.environ, so it wins even
+            # when a real .env on disk defines NIGHTY_HOME (which env() would
+            # otherwise prefer over the process environment, sending rotation at
+            # the real install instead of this temp dir).
+            self._set_env(NIGHTY_HOME=appdata, NIGHTY_DIAG_DIR=diag_dir)
 
             msg = enforce_config.rotate_and_clean_logs(appdata)
             self.assertIn("rotated 1 log(s)", msg)
