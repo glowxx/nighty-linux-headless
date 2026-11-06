@@ -166,7 +166,7 @@ def initialize_auth():
 
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
-_ctx = ssl.create_default_context(); _ctx.check_hostname = False; _ctx.verify_mode = ssl.CERT_NONE
+_ctx = ssl.create_default_context()
 
 
 _web_up_cache = {"t": 0.0, "v": False}
@@ -1348,6 +1348,8 @@ class H(BaseHTTPRequestHandler):
             return True
         if self.request_is_trusted_local():
             return True
+        if hasattr(self.headers, "get_all") and len(self.headers.get_all("Authorization", [])) > 1:
+            return False
         hdr = self.headers.get("Authorization", "")
         scheme, separator, token = hdr.partition(" ")
         if scheme.lower() != "basic" or not separator:
@@ -1365,6 +1367,28 @@ class H(BaseHTTPRequestHandler):
             ok_pass = hmac.compare_digest(pw.encode("utf-8"), AUTH_PASS.encode("utf-8"))
             return bool(ok_user & ok_pass)
         except Exception:
+            return False
+
+    def origin_allowed(self):
+        # Browsers can attach cached Basic credentials to cross-site requests.
+        # Host is preserved by reverse proxies, so compare authorities rather
+        # than the bridge's loopback bind or the proxy's TLS termination scheme.
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True  # internal probes and non-browser clients
+        try:
+            source = urllib.parse.urlsplit(origin)
+            target = urllib.parse.urlsplit("//" + self.headers.get("Host", ""))
+            if source.scheme not in ("http", "https") or not source.hostname or not target.hostname:
+                return False
+            if source.username is not None or source.password is not None or source.path or source.query or source.fragment:
+                return False
+            default_port = 443 if source.scheme == "https" else 80
+            source_port = source.port if source.port is not None else default_port
+            target_port = target.port if target.port is not None else default_port
+            return (source.hostname.lower() == target.hostname.lower()
+                    and source_port == target_port)
+        except ValueError:
             return False
 
     def _request_length(self):
@@ -1396,6 +1420,9 @@ class H(BaseHTTPRequestHandler):
     def handle_expect_100(self):
         if not self.authorized():
             self.demand_auth()
+            return False
+        if self.command == "POST" and not self.origin_allowed():
+            self._send_status(403, b"cross-origin request rejected")
             return False
         if self._request_length() is None:
             return False
@@ -1528,6 +1555,8 @@ class H(BaseHTTPRequestHandler):
             authenticated = self.authorized()
             if not health_path and not authenticated:
                 return self.demand_auth()
+            if self.headers.get("Upgrade", "").lower() == "websocket" and not self.origin_allowed():
+                return self._send_status(403, b"cross-origin request rejected")
             length = self._request_length()
             if length is None:
                 return
@@ -1598,6 +1627,8 @@ class H(BaseHTTPRequestHandler):
         try:
             if not self.authorized():
                 return self.demand_auth()
+            if not self.origin_allowed():
+                return self._send_status(403, b"cross-origin request rejected")
             ln = self._request_length()
             if ln is None:
                 return

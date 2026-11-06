@@ -158,8 +158,10 @@ class PublicStateTests(unittest.TestCase):
 
 
 class WebsocketAllowlistTests(unittest.TestCase):
-    def attempt_upgrade(self, path):
-        h = _handler_with_sink(path, {"Upgrade": "websocket"})
+    def attempt_upgrade(self, path, extra_headers=None):
+        headers = {"Upgrade": "websocket"}
+        headers.update(extra_headers or {})
+        h = _handler_with_sink(path, headers)
         with ExitStack() as stack:
             stack.enter_context(patch.object(h, "authorized", return_value=True))
             for name, value in (("web_up", True), ("panel_blocked", False),
@@ -181,6 +183,17 @@ class WebsocketAllowlistTests(unittest.TestCase):
                 tunnelled, response = self.attempt_upgrade(path)
                 self.assertFalse(tunnelled)
                 self.assertIn(b"403", response)
+
+    def test_cross_site_upgrade_is_rejected_even_after_authentication(self):
+        tunnelled, response = self.attempt_upgrade("/socket.io/", {
+            "Host": "nighty.example", "Origin": "https://attacker.example"})
+        self.assertFalse(tunnelled)
+        self.assertIn(b"403", response)
+
+    def test_same_origin_https_proxy_upgrade_is_allowed(self):
+        tunnelled, _ = self.attempt_upgrade("/socket.io/", {
+            "Host": "nighty.example", "Origin": "https://nighty.example"})
+        self.assertTrue(tunnelled)
 
 
 class RequestLimitTests(unittest.TestCase):
@@ -492,6 +505,26 @@ class HTTPIntegrationTests(unittest.TestCase):
 
     def test_forwarding_headers_cannot_disable_forced_auth(self):
         self.assertEqual(self.request("/state", {"X-Forwarded-For": "127.0.0.1"})[0], 401)
+
+    def test_cross_origin_post_is_rejected_with_correct_credentials(self):
+        wrong_port = "http://127.0.0.1:%d" % (self.server.server_address[1] + 1)
+        for origin in ("https://attacker.example", "null", "http://user@127.0.0.1", wrong_port):
+            headers = basic_header("operator", "s3cret-value")
+            headers["Origin"] = origin
+            status, response_headers, _ = self.request("/rpc", headers, method="POST")
+            self.assertEqual(status, 403)
+            self.assertEqual(response_headers["Connection"], "close")
+
+    def test_same_origin_post_reaches_the_locked_setup_gate(self):
+        headers = basic_header("operator", "s3cret-value")
+        headers["Origin"] = "http://127.0.0.1:%d" % self.server.server_address[1]
+        self.assertEqual(self.request("/rpc", headers, method="POST")[0], 404)
+
+    def test_duplicate_authorization_headers_are_rejected(self):
+        auth = basic_header("operator", "s3cret-value")["Authorization"].encode("ascii")
+        response = self.raw_request(b"GET /state HTTP/1.1\r\nHost: localhost\r\nAuthorization: "
+                                    + auth + b"\r\nAuthorization: Basic invalid\r\n\r\n")
+        self.assertIn(b"HTTP/1.1 401", response)
 
     def test_anonymous_health_returns_only_minimal_status(self):
         for path in ("/healthz", "/ready?probe=1"):

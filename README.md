@@ -257,6 +257,10 @@ the event stream, current URL or Discord application id to a remote client, and
 `/events` is available only to trusted loopback clients in `auto`/`off` mode.
 WebSocket upgrades are restricted to the `/socket.io` and `/ws` endpoints
 (with an optional trailing slash and query string).
+Browser POST requests and WebSocket upgrades must have an `Origin` matching
+the requested host and port. Reverse proxies must preserve the browser's
+`Host` and `Authorization` headers. The bridge verifies HTTPS certificates
+when validating Discord tokens.
 
 ---
 
