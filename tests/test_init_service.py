@@ -32,6 +32,10 @@ class ServiceTextTests(unittest.TestCase):
         self.assertIn(f"ExecStart=/usr/bin/env bash {WORKDIR}/scripts/run.sh --run", text)
         self.assertIn("RestartPreventExitStatus=23", text)
         self.assertIn("SuccessExitStatus=23", text)
+        template = (ROOT / "systemd" / "nighty.service").read_text(encoding="utf-8")
+        for setting in ("KillMode=control-group", "MemoryMax=90%"):
+            self.assertIn(setting, text)
+            self.assertIn(setting, template)
 
     def test_openrc_script_is_an_openrc_run_script(self) -> None:
         text = self.emit("nighty_openrc_script_text", RUN_USER, WORKDIR)

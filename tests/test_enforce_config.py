@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -14,16 +15,20 @@ import enforce_config  # noqa: E402
 
 
 class EnforceConfigTests(unittest.TestCase):
+    def setUp(self):
+        env_patch = patch.dict(os.environ, {})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        file_patch = patch.object(enforce_config, "_find_env_file", return_value=None)
+        file_patch.start()
+        self.addCleanup(file_patch.stop)
+
     def _set_env(self, **values):
-        """Set os.environ keys for the duration of one test, restore afterward,
-        and neutralize any real .env on disk so env() reflects these values."""
+        """Set process settings for one test; setUp isolates the real .env."""
         for key, value in values.items():
             prev = os.environ.get(key)
             os.environ[key] = value
             self.addCleanup(self._restore_env, key, prev)
-        prev_cache = dict(enforce_config._ENV_CACHE)
-        enforce_config._ENV_CACHE.update(path="__test__", mtime=None, vals={})
-        self.addCleanup(enforce_config._ENV_CACHE.update, prev_cache)
 
     @staticmethod
     def _restore_env(key, prev):

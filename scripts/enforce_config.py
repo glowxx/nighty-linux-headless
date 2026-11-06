@@ -27,8 +27,8 @@ def _find_env_file():
     """Locate the project's .env. It lives at the repo root, one level above this
     scripts/ directory; allow an override via NIGHTY_ENV for unusual layouts."""
     override = os.environ.get("NIGHTY_ENV")
-    if override and os.path.isfile(override):
-        return override
+    if override:
+        return override if os.path.isfile(override) else None
     here = os.path.dirname(os.path.abspath(__file__))
     for c in (os.path.join(os.path.dirname(here), ".env"), os.path.join(here, ".env")):
         if os.path.isfile(c):
@@ -46,9 +46,12 @@ def _env_file_vals():
     if not path:
         return {}
     try:
-        mtime = os.path.getmtime(path)
+        stat = os.stat(path)
+        # Atomic replacement can retain the timestamp on coarse filesystems.
+        # Include identity and size so a newly generated password is re-read.
+        mtime = (stat.st_mtime_ns, stat.st_ino, stat.st_size)
     except OSError:
-        return _ENV_CACHE["vals"]
+        return _ENV_CACHE["vals"] if _ENV_CACHE["path"] == path else {}
     if _ENV_CACHE["path"] == path and _ENV_CACHE["mtime"] == mtime:
         return _ENV_CACHE["vals"]
     vals = {}
@@ -56,6 +59,8 @@ def _env_file_vals():
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
+                if line.startswith("export "):
+                    line = line[7:].lstrip()
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
@@ -64,7 +69,7 @@ def _env_file_vals():
                     v = v[1:-1]   # strip matching surrounding quotes
                 vals[k] = v
     except Exception:
-        return _ENV_CACHE["vals"]
+        return _ENV_CACHE["vals"] if _ENV_CACHE["path"] == path else {}
     _ENV_CACHE.update(path=path, mtime=mtime, vals=vals)
     return vals
 
@@ -181,7 +186,7 @@ def enforce_web(appdata):
     if wc is None:
         wc = {}
     desired = {
-        "username": env("WEBUI_USERNAME", "admin"),
+        "username": env("WEBUI_USERNAME", "admin") or "admin",
         "password": env("WEBUI_PASSWORD", ""),
         "host": env("WEBUI_HOST", "127.0.0.1"),
         "port": int(env("WEBUI_PORT", "8090")),

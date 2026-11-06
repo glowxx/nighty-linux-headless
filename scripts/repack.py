@@ -60,7 +60,7 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("NIGHTY_STUB", "Night
 # The stub `webview` module. Port and log path are read from the environment at
 # runtime (inside wine), so nothing is hardcoded.
 STUB_INIT = r'''
-import sys, os, threading, time, traceback, queue
+import sys, os, threading, time, traceback, queue, atexit
 _taskq = queue.Queue()
 _PORT = int(os.environ.get("NIGHTY_STUB_PORT", "8765"))
 _LOG = os.environ.get("NIGHTY_STUB_LOG", "")
@@ -95,6 +95,17 @@ def _log(*a):
         if repeated:
             _logemit("[STUBWV] (previous line repeated %d more times)" % repeated)
         _logemit(msg)
+
+def _close_log():
+    with _loglock:
+        if _logstate["repeats"]:
+            _logemit("[STUBWV] (previous line repeated %d more times)" % _logstate["repeats"])
+        fh = _logstate["fh"]
+        _logstate.update(fh=None, last=None, repeats=0)
+        if fh:
+            try: fh.close()
+            except Exception: pass
+atexit.register(_close_log)
 
 class WebViewException(Exception): pass
 class JavascriptException(Exception): pass
