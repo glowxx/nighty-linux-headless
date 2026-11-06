@@ -11,18 +11,20 @@
 #
 # Usage:
 #   1) Install Caddy (https://caddyserver.com/docs/install).
-#   2) Copy this to /etc/caddy/Caddyfile (edit the address/port as you like).
-#   3) systemctl reload caddy
-#   4) Open http://<host-ip>:8088/ in your browser.
+#   2) Set BRIDGE_HOST=127.0.0.1, BRIDGE_PORT=8089, BRIDGE_AUTH=on in .env
+#      and restart Nighty. Forced auth protects requests arriving from Caddy.
+#   3) Copy this to /etc/caddy/Caddyfile (edit the address/port as you like).
+#   4) systemctl reload caddy
+#   5) Open http://<host-ip>:8088/ in your browser.
 #
-# This sends the browser straight to the native Web UI. Use the bundled bridge
-# (on another port, e.g. 8089) only for first-run onboarding if the panel is not
-# up yet.
+# This uses the bridge for onboarding, HTTP auth and WebSocket restrictions.
+# Caddy forwards the browser's Authorization header to the bridge by default.
+# Use a hostname with HTTPS before exposing this outside a trusted LAN.
 # ─────────────────────────────────────────────────────────────────────────────
 
 :8088 {
-	# Native Nighty Web UI (loopback). Caddy upgrades WebSockets automatically.
-	reverse_proxy 127.0.0.1:8090
+	# Authenticated bridge (loopback). Caddy upgrades WebSockets automatically.
+	reverse_proxy 127.0.0.1:8089
 
 	encode gzip
 }
@@ -30,5 +32,5 @@
 # ── Want HTTPS on your LAN? Use a hostname + Caddy's internal CA: ──
 # nighty.lan {
 # 	tls internal
-# 	reverse_proxy 127.0.0.1:8090
+# 	reverse_proxy 127.0.0.1:8089
 # }

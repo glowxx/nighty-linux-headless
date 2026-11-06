@@ -211,6 +211,57 @@ Select the **Reset configuration** option matching your deployment method to saf
 - The LAN bridge has no transport encryption — run it only on a trusted LAN, or put it behind a VPN for remote access.
 - Your `.env` (credentials) and Wine prefix (tokens) are git-ignored. Never commit them!
 
+### Bridge authentication
+
+When `BRIDGE_HOST` is **not** loopback, the bridge requires HTTP Basic auth using
+your existing `WEBUI_USERNAME` / `WEBUI_PASSWORD` before it serves or proxies
+anything except the minimal health probes. In `auto` mode, loopback clients
+(the Docker healthcheck, `run.sh`'s own probes) are exempt.
+
+> [!IMPORTANT]
+> The loopback exemption is keyed on the real TCP peer address, so it cannot be
+> spoofed with a header. But if you front the bridge with a **same-host reverse
+> proxy** (e.g. the bundled `Caddyfile.example`), every proxied request arrives
+> from `127.0.0.1` and is treated as loopback — the bridge's own auth is then
+> bypassed in `auto` mode. In that setup, set `BRIDGE_AUTH=on` and have the
+> proxy forward credentials, or terminate authentication **at the proxy**.
+> Forced auth also disables loopback access to `/events` and full `/state`
+> diagnostics. The bundled `Caddyfile.example` uses the bridge on port 8089;
+> proxying the native panel directly on port 8090 bypasses all bridge protections.
+
+| `BRIDGE_AUTH` | Behaviour |
+| --- | --- |
+| `auto` (default) | Require auth only when `BRIDGE_HOST` is not loopback |
+| `on` | Require auth even for loopback clients, except minimal health probes |
+| `off` | Never require auth |
+
+If authentication is enabled and `WEBUI_PASSWORD` is still a known default
+(or empty), the bridge generates a strong password, writes it to `.env` with
+`0600` permissions, and prints it once at startup. When using `run.sh`, this
+appears in `diagnostics/bridge.log` (or `$NIGHTY_DIAG_DIR/bridge.log`) and the
+password is saved in `.env`; it does not appear in `journalctl -u nighty`.
+The bridge log is also restricted to `0600`. Startup stops if the generated
+credentials cannot be saved, so bridge restarts keep the same login as the
+native panel. Choose a strong `WEBUI_PASSWORD` explicitly if `.env` is read-only.
+
+What is reachable **without** credentials on a network-facing bind:
+
+- `GET /healthz` and `GET /ready` return only `{"status": ..., "ready": ...}`.
+  Backend mode, uptime and timestamps go to authenticated or trusted loopback clients
+  only, so the endpoint stays usable as a health probe without telling a scanner
+  when onboarding is open.
+
+Everything else — the panel, the setup wizard, `/state`, and the socket.io
+WebSocket upgrade — returns `401` until you authenticate. `/state` never exposes
+the event stream, current URL or Discord application id to a remote client, and
+`/events` is available only to trusted loopback clients in `auto`/`off` mode.
+WebSocket upgrades are restricted to the `/socket.io` and `/ws` endpoints
+(with an optional trailing slash and query string).
+Browser POST requests and WebSocket upgrades must have an `Origin` matching
+the requested host and port. Reverse proxies must preserve the browser's
+`Host` and `Authorization` headers. The bridge verifies HTTPS certificates
+when validating Discord tokens.
+
 ---
 
 ## Troubleshooting

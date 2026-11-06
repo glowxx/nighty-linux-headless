@@ -15,14 +15,16 @@ token) for when the panel is not up yet.
 All hosts/ports/credentials come from the environment (see .env.example).
 Nothing is hardcoded; no secrets live in this file.
 """
-import os, json, ssl, time, base64, select, socket, urllib.request, urllib.error, urllib.parse
+import os, sys, json, ssl, hmac, time, base64, select, socket, ipaddress, tempfile, urllib.request, urllib.error, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
-    from enforce_config import find_appdata  # same directory
+    from enforce_config import find_appdata, env  # same directory
 except Exception:
     def find_appdata():
         return None
+    def env(key, default=None):
+        return os.environ.get(key, default)
 
 STUB_PORT = int(os.environ.get("STUB_PORT", "8765"))
 WEBUI_HOST = os.environ.get("WEBUI_HOST", "127.0.0.1")
@@ -30,12 +32,141 @@ WEBUI_PORT = int(os.environ.get("WEBUI_PORT", "8090"))
 HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("BRIDGE_PORT", "8088"))
 START_TIME = time.time()
+try:
+    MAX_REQUEST_BYTES = int(os.environ.get("BRIDGE_MAX_REQUEST_BYTES", "262144"))
+except ValueError:
+    MAX_REQUEST_BYTES = 262144
+if MAX_REQUEST_BYTES <= 0:
+    MAX_REQUEST_BYTES = 262144
+WS_ALLOWED_PATHS = frozenset(("/socket.io", "/socket.io/", "/ws", "/ws/"))
 
 STUB = "http://127.0.0.1:%d" % STUB_PORT
 WEBPANEL = "http://%s:%d" % (WEBUI_HOST, WEBUI_PORT)
 
+WEBUI_USERNAME = os.environ.get("WEBUI_USERNAME", "")
+WEBUI_PASSWORD = os.environ.get("WEBUI_PASSWORD", "")
+BRIDGE_AUTH = (os.environ.get("BRIDGE_AUTH", "auto") or "auto").strip().lower()
+WEAK_PASSWORDS = frozenset(("", "change-this-please", "secret", "password", "admin", "nighty"))
+AUTH_REALM = "Nighty"
+
+
+def bind_is_public():
+    return HOST.lower().rstrip(".") != "localhost" and not client_is_loopback(HOST)
+
+
+def client_is_loopback(addr):
+    # Use the TCP peer, never forwarding headers. Parse mapped IPv6 addresses
+    # too, including their hexadecimal form (::ffff:7f00:1).
+    try:
+        address = ipaddress.ip_address(addr)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return address.is_loopback
+    except ValueError:
+        return False
+
+
+def auth_forced():
+    return BRIDGE_AUTH in ("on", "1", "true", "yes")
+
+
+def auth_enabled():
+    if BRIDGE_AUTH in ("off", "0", "false", "no"):
+        return False
+    if auth_forced():
+        return True
+    return bind_is_public()
+
+
+def env_file_path():
+    override = os.environ.get("NIGHTY_ENV")
+    if override:
+        return override
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(os.path.dirname(here), ".env"), os.path.join(here, ".env")):
+        if os.path.isfile(cand):
+            return cand
+    return os.path.join(os.path.dirname(here), ".env")
+
+
+def persist_generated_password(value, username=None):
+    path = env_file_path()
+    if not path:
+        return False
+    tmp = None
+    try:
+        lines = []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        updates = {"WEBUI_PASSWORD": value}
+        if username is not None:
+            updates["WEBUI_USERNAME"] = username
+        out, replaced = [], set()
+        for line in lines:
+            assignment = line.lstrip()
+            if assignment.startswith("export "):
+                assignment = assignment[7:].lstrip()
+            key, separator, _ = assignment.partition("=")
+            key = key.strip()
+            if separator and key in updates:
+                out.append(key + "=" + updates[key])
+                replaced.add(key)
+            else:
+                out.append(line)
+        out.extend(key + "=" + val for key, val in updates.items() if key not in replaced)
+        # mkstemp creates a unique file at 0600. A predictable .env.tmp could
+        # already exist as a symlink, or be readable before a later chmod.
+        fd, tmp = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=os.path.dirname(os.path.abspath(path)))
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(out) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def resolve_credentials():
+    # The supervisor's environment can still contain the old default on a
+    # restart. Use the same file-first resolver as the native panel's guard.
+    user = env("WEBUI_USERNAME", WEBUI_USERNAME) or "admin"
+    pw = env("WEBUI_PASSWORD", WEBUI_PASSWORD) or ""
+    if ":" in user or "\n" in user or "\r" in user:
+        raise RuntimeError("WEBUI_USERNAME cannot contain a colon or newline")
+    if pw.strip().lower() in WEAK_PASSWORDS:
+        pw = base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
+        if not persist_generated_password(pw, user):
+            raise RuntimeError("could not save generated credentials to .env; set WEBUI_PASSWORD explicitly")
+        banner = "=" * 72
+        print(banner, flush=True)
+        print("bridge: authentication is enabled and WEBUI_PASSWORD is unset or a known default.", flush=True)
+        print("bridge: generated credentials:", flush=True)
+        print("bridge:     username: %s" % user, flush=True)
+        print("bridge:     password: %s" % pw, flush=True)
+        print("bridge: saved to .env", flush=True)
+        print(banner, flush=True)
+    return user, pw
+
+
+AUTH_USER = ""
+AUTH_PASS = ""
+
+def initialize_auth():
+    global AUTH_USER, AUTH_PASS
+    if auth_enabled():
+        AUTH_USER, AUTH_PASS = resolve_credentials()
+
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
-_ctx = ssl.create_default_context(); _ctx.check_hostname = False; _ctx.verify_mode = ssl.CERT_NONE
+_ctx = ssl.create_default_context()
 
 
 _web_up_cache = {"t": 0.0, "v": False}
@@ -905,6 +1036,15 @@ def get_state():
             "ready": bool(web_up())}
 
 
+STATE_PUBLIC_FIELDS = ("mode", "ready", "locked")
+
+
+def public_state(state, is_local):
+    if is_local:
+        return state
+    return {k: state.get(k) for k in STATE_PUBLIC_FIELDS if k in state}
+
+
 CSS = """:root{--bg:#080a0f;--panel:#0f131c;--panel-2:#0c0f17;--line:#1b2233;--line-2:#232c42;
 --txt:#eef2fb;--mut:#8b96ad;--mut-2:#5c6885;--brand:#6d8bff;--brand-2:#8ba6ff;--ok:#37d399;--err:#ff6b6b;--warn:#f5b544;--radius:14px}
 *{box-sizing:border-box}html,body{height:100%}
@@ -1145,15 +1285,174 @@ def build_ui():
     return loading_page()
 
 
+class BridgeServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, socket.timeout, TimeoutError)):
+            return
+        try:
+            sys.stderr.write("[bridge] %s from %s\n" % (type(exc).__name__, client_address[0]))
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+
 class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    timeout = 30
+    server_version = "nighty-bridge"
+    sys_version = ""
+
     def log_message(self, *a):
         pass
+
+    def _security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+
+    def version_string(self):
+        # server_version + " " + sys_version; with sys_version="" the base
+        # class emits a trailing space ("nighty-bridge "). Return the clean name.
+        return self.server_version
+
+    def _send_status(self, code, body=b""):
+        # These are all reject/short-circuit responses that may not have read the
+        # request body (401/400/413/403). Under HTTP/1.1 keep-alive an unread body
+        # would desync the next request on the connection, so close it.
+        self.close_connection = True
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self._security_headers()
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except Exception:
+            pass
+
+    def request_is_local(self):
+        try:
+            return client_is_loopback(self.client_address[0])
+        except Exception:
+            return False
+
+    def request_is_trusted_local(self):
+        # Forced auth is also the mode for same-host reverse proxies. Their
+        # loopback connection must not grant access to internal diagnostics.
+        return not auth_forced() and self.request_is_local()
+
+    def authorized(self):
+        if not auth_enabled():
+            return True
+        if self.request_is_trusted_local():
+            return True
+        if hasattr(self.headers, "get_all") and len(self.headers.get_all("Authorization", [])) > 1:
+            return False
+        hdr = self.headers.get("Authorization", "")
+        scheme, separator, token = hdr.partition(" ")
+        if scheme.lower() != "basic" or not separator:
+            return False
+        try:
+            raw = base64.b64decode(token.strip(), validate=True).decode("utf-8")
+            user, separator, pw = raw.partition(":")
+            if not separator:
+                return False
+            # Compare on both fields with no short-circuit: `and` would skip the
+            # password check on a username miss and leak, via timing, whether the
+            # username was right. `&` forces both compare_digest calls to run.
+            # Bytes also support the UTF-8 credentials advertised in the realm.
+            ok_user = hmac.compare_digest(user.encode("utf-8"), AUTH_USER.encode("utf-8"))
+            ok_pass = hmac.compare_digest(pw.encode("utf-8"), AUTH_PASS.encode("utf-8"))
+            return bool(ok_user & ok_pass)
+        except Exception:
+            return False
+
+    def origin_allowed(self):
+        # Browsers can attach cached Basic credentials to cross-site requests.
+        # Host is preserved by reverse proxies, so compare authorities rather
+        # than the bridge's loopback bind or the proxy's TLS termination scheme.
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True  # internal probes and non-browser clients
+        try:
+            source = urllib.parse.urlsplit(origin)
+            target = urllib.parse.urlsplit("//" + self.headers.get("Host", ""))
+            if source.scheme not in ("http", "https") or not source.hostname or not target.hostname:
+                return False
+            if source.username is not None or source.password is not None or source.path or source.query or source.fragment:
+                return False
+            default_port = 443 if source.scheme == "https" else 80
+            source_port = source.port if source.port is not None else default_port
+            target_port = target.port if target.port is not None else default_port
+            return (source.hostname.lower() == target.hostname.lower()
+                    and source_port == target_port)
+        except ValueError:
+            return False
+
+    def _request_length(self):
+        # The bridge does not decode chunked bodies. Reject ambiguous framing
+        # and close the connection before unread bytes become another request.
+        if self.headers.get("Transfer-Encoding") is not None:
+            self._send_status(400, b"unsupported transfer encoding")
+            return None
+        if hasattr(self.headers, "get_all"):
+            lengths = self.headers.get_all("Content-Length", [])
+        else:
+            lengths = [self.headers["Content-Length"]] if "Content-Length" in self.headers else []
+        if len(lengths) > 1:
+            self._send_status(400, b"ambiguous content length")
+            return None
+        raw = lengths[0] if lengths else "0"
+        try:
+            if not raw.isascii() or not raw.isdecimal():
+                raise ValueError
+            length = int(raw)
+        except (ValueError, AttributeError):
+            self._send_status(400, b"invalid content length")
+            return None
+        if length > MAX_REQUEST_BYTES:
+            self._send_status(413, b"request body too large")
+            return None
+        return length
+
+    def handle_expect_100(self):
+        if not self.authorized():
+            self.demand_auth()
+            return False
+        if self.command == "POST" and not self.origin_allowed():
+            self._send_status(403, b"cross-origin request rejected")
+            return False
+        if self._request_length() is None:
+            return False
+        return super().handle_expect_100()
+
+    def demand_auth(self):
+        body = b"authentication required"
+        # A 401 on a POST is answered before the request body is read; under
+        # HTTP/1.1 keep-alive the unread body would desync the next request
+        # (and corrupt the client's authenticated retry on the same socket).
+        # Close so the retry opens a fresh connection.
+        self.close_connection = True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="%s", charset="UTF-8"' % AUTH_REALM)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self._security_headers()
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except Exception:
+            pass
 
     def _send(self, body, ctype="text/html; charset=utf-8", code=200):
         if isinstance(body, str):
             body = body.encode("utf-8", "replace")
         self.send_response(code); self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body)))
+        self._security_headers()
         self.end_headers()
         try: self.wfile.write(body)
         except Exception: pass
@@ -1179,7 +1478,9 @@ class H(BaseHTTPRequestHandler):
         if loc:
             self.send_header("Location", loc)
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(data))); self.end_headers()
+        self.send_header("Content-Length", str(len(data)))
+        self._security_headers()
+        self.end_headers()
         try: self.wfile.write(data)
         except Exception: pass
 
@@ -1249,13 +1550,25 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            api_path = self.path.startswith(("/state", "/events", "/ready", "/healthz"))
+            path = urllib.parse.urlsplit(self.path).path
+            health_path = path in ("/healthz", "/ready")
+            authenticated = self.authorized()
+            if not health_path and not authenticated:
+                return self.demand_auth()
+            if self.headers.get("Upgrade", "").lower() == "websocket" and not self.origin_allowed():
+                return self._send_status(403, b"cross-origin request rejected")
+            length = self._request_length()
+            if length is None:
+                return
+            if length:
+                return self._send_status(400, b"GET bodies are not supported")
+            api_path = path in ("/state", "/events", "/ready", "/healthz")
             # Add-another-account mode (set by add_account.sh): re-serve the setup
             # wizard, retitled, even though the box is already onboarded/locked, so
             # a second account can be provisioned. Takes priority over the panel.
             if not api_path and add_account_active():
                 if self.headers.get("Upgrade", "").lower() == "websocket":
-                    self.send_response(403); self.end_headers(); return
+                    return self._send_status(403)
                 return self._send(setup_page(
                     title="Nighty <span>&middot; Add account</span>",
                     first_lead="Adding an <b>additional account</b> to Nighty. Your existing "
@@ -1266,40 +1579,42 @@ class H(BaseHTTPRequestHandler):
             # non-working panel.
             if not api_path and panel_blocked():
                 if self.headers.get("Upgrade", "").lower() == "websocket":
-                    self.send_response(403); self.end_headers(); return
+                    return self._send_status(403)
                 return self._send(authorize_page())
             # Early setup (license / sign-in / bot token): the bridge owns the
             # onboarding UI. Never proxy the native panel here, even if a stale
             # backend still has 8090 open — show our setup pages instead.
             if not api_path and not setup_locked() and not _onboarded():
                 if self.headers.get("Upgrade", "").lower() == "websocket":
-                    self.send_response(403); self.end_headers(); return
+                    return self._send_status(403)
                 return self._send(build_ui())
             # Native Web UI ("legacy") is the primary interface.
             if web_up() and not api_path:
                 if self.headers.get("Upgrade", "").lower() == "websocket":
+                    if path not in WS_ALLOWED_PATHS:
+                        return self._send_status(403)
                     return self._proxy_ws()
                 return self._proxy("GET")
-            if self.path in ("/healthz", "/ready") or self.path.startswith(("/healthz?", "/ready?")):
+            if health_path:
                 up = bool(web_up() and not panel_blocked())
-                resp = {
-                    "status": "ok" if up else "starting",
-                    "backend_running": up,
-                    "ready": up,
-                    "mode": "panel" if up else ("onboarding" if not setup_locked() and not _onboarded() else "loading"),
-                    "uptime_seconds": round(time.time() - START_TIME, 2),
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                }
+                resp = {"status": "ok" if up else "starting", "ready": up}
+                if authenticated:
+                    resp["backend_running"] = up
+                    resp["mode"] = "panel" if up else ("onboarding" if not setup_locked() and not _onboarded() else "loading")
+                    resp["uptime_seconds"] = round(time.time() - START_TIME, 2)
+                    resp["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 return self._send(json.dumps(resp), "application/json", code=200 if up else 503)
             if self.path == "/" or self.path.startswith("/ui"):
                 return self._send(build_ui())
-            if self.path.startswith("/state"):
+            if path == "/state":
                 try:
-                    return self._send(json.dumps(get_state()), "application/json")
+                    return self._send(json.dumps(public_state(get_state(), self.request_is_trusted_local())), "application/json")
                 except Exception:
                     return self._send(json.dumps({"mode": "loading", "locked": setup_locked(),
                                                   "ready": bool(web_up())}), "application/json")
-            if self.path.startswith("/events"):
+            if path == "/events":
+                if not self.request_is_trusted_local():
+                    return self._send_status(404, b"not found")
                 q = urllib.parse.urlparse(self.path).query
                 return self._send(urllib.request.urlopen(STUB + "/bridge/events?" + q, timeout=10).read(), "application/json")
             # Any other path while the panel is not up yet (e.g. an asset request)
@@ -1310,8 +1625,19 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            ln = int(self.headers.get("Content-Length", 0) or 0)
-            body = self.rfile.read(ln) if ln else b""
+            if not self.authorized():
+                return self.demand_auth()
+            if not self.origin_allowed():
+                return self._send_status(403, b"cross-origin request rejected")
+            ln = self._request_length()
+            if ln is None:
+                return
+            try:
+                body = self.rfile.read(ln) if ln else b""
+            except (socket.timeout, TimeoutError):
+                return self._send_status(408, b"request body timed out")
+            if len(body) != ln:
+                return self._send_status(400, b"incomplete request body")
             # Onboarding / control endpoints (/rpc, /provision, /recheck_auth,
             # /check_*) drive the loopback-only stub control server and the on-disk
             # config. They are used solely by the bridge's own setup wizard and the
@@ -1388,10 +1714,20 @@ class H(BaseHTTPRequestHandler):
             if web_up() and not panel_blocked():
                 return self._proxy("POST", body)
             return self._send("not found", code=404)
-        except Exception as e:
-            return self._send(json.dumps({"ok": False, "error": repr(e)}), "application/json", 500)
+        except Exception:
+            return self._send_status(500, b"request failed")
 
 
 if __name__ == "__main__":
+    try:
+        initialize_auth()
+    except RuntimeError as exc:
+        print("bridge: %s" % exc, file=sys.stderr, flush=True)
+        sys.exit(2)
+    if sys.argv[1:] == ["--prepare-credentials"]:
+        sys.exit(0)
+    if ":" in HOST:
+        BridgeServer.address_family = socket.AF_INET6
     print("bridge on %s:%d  ->  Web UI %s  /  stub %s" % (HOST, PORT, WEBPANEL, STUB), flush=True)
-    ThreadingHTTPServer((HOST, PORT), H).serve_forever()
+    with BridgeServer((HOST, PORT), H) as server:
+        server.serve_forever()

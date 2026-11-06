@@ -41,6 +41,8 @@ Restart=always
 RestartSec=5
 SuccessExitStatus=23
 RestartPreventExitStatus=23
+KillMode=control-group
+MemoryMax=90%
 
 [Install]
 WantedBy=multi-user.target

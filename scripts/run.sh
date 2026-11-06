@@ -13,6 +13,7 @@
 #  for you. With --run it just starts the stack (this is what the service uses).
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
+umask 077
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERE/scripts/wine_command.sh"
 . "$HERE/scripts/init_service.sh"
@@ -427,7 +428,7 @@ cleanup() {
 
 run_stack() {
   trap cleanup EXIT
-  trap 'exit 0' INT TERM
+  trap 'exit 0' INT TERM HUP
 
   local guard_rc
   guard_existing_instance; guard_rc=$?
@@ -493,24 +494,17 @@ run_stack() {
   DIAG_DIR="${NIGHTY_DIAG_DIR:-$HERE/diagnostics}"
   mkdir -p "$DIAG_DIR" 2>/dev/null || true
 
-  cleanup() {
-    log "Shutdown signal received. Stopping stack cleanly..."
-    [ -n "${GUARD_PID:-}" ] && kill -15 "$GUARD_PID" 2>/dev/null || true
-    [ -n "${BRIDGE_LOOP_PID:-}" ] && kill -15 "$BRIDGE_LOOP_PID" 2>/dev/null || true
-    pkill -15 -f "bridge.py" 2>/dev/null || true
-    pkill -15 -f "webui_guard.py" 2>/dev/null || true
-    if [ -n "${WINE_BIN:-}" ] && [ -x "$WINE_BIN" ]; then
-      "$WINE_BIN" wineserver -k 2>/dev/null || true
-    elif command -v wineserver >/dev/null 2>&1; then
-      wineserver -k 2>/dev/null || true
-    fi
-    [ -n "${XVFB_PID:-}" ] && kill -15 "$XVFB_PID" 2>/dev/null || true
-    rm -f "/tmp/.X11-unix/X${DISPLAY_NUM}" "/tmp/.X${DISPLAY_NUM}-lock" 2>/dev/null || true
-    release_instance_guard
-    log "Shutdown complete."
-    exit 0
-  }
-  trap cleanup SIGTERM SIGINT SIGHUP
+  # Resolve credentials before the guard/backend can read web_config.json.
+  # Restrict an existing log too: upgrades may have created it with mode 0644.
+  touch "$NIGHTY_DIAG_DIR/bridge.log" || return 1
+  for bridge_log in "$NIGHTY_DIAG_DIR/bridge.log" "$NIGHTY_DIAG_DIR/bridge.log".[0-9]*; do
+    [ -f "$bridge_log" ] || continue
+    chmod 600 "$bridge_log" || return 1
+  done
+  if ! python3 "$HERE/scripts/bridge.py" --prepare-credentials >>"$NIGHTY_DIAG_DIR/bridge.log" 2>&1; then
+    log "FATAL: could not prepare bridge credentials; inspect $NIGHTY_DIAG_DIR/bridge.log"
+    return 1
+  fi
 
   # Pre-launch config enforcement (notifications off, Web UI creds + web:true).
   python3 "$HERE/scripts/enforce_config.py" || true
