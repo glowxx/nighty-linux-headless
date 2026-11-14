@@ -229,6 +229,14 @@ def enforce_web(appdata):
         msgs.append("web already true")
 
     if isinstance(nc, dict) and nc:
+        # New Nighty selects a login by name rather than the old per-login flag.
+        if "active_account" not in nc and isinstance(nc.get("logins"), dict):
+            active = [name for name, info in nc["logins"].items()
+                      if isinstance(info, dict) and info.get("active")]
+            if len(active) == 1:
+                nc["active_account"] = active[0]
+                _save(nc_path, nc)
+                msgs.append("active account migrated")
         backup_path = os.path.join(appdata, "nighty.config.bak")
         if _backup_differs_from_source(nc_path, backup_path):
             try:

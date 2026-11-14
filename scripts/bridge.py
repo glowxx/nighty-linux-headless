@@ -310,13 +310,15 @@ def _write_login(username, account_token, app_id, bot_token, make_active=True):
     d = {}
     if os.path.exists(cfg):
         try:
-            d = json.load(open(cfg, encoding="utf-8")) or {}
+            with open(cfg, encoding="utf-8") as f:
+                d = json.load(f) or {}
         except Exception:
             d = {}
     logins = d.get("logins")
     if not isinstance(logins, dict):
         logins = {}
     if make_active:
+        d["active_account"] = username
         for info in logins.values():
             if isinstance(info, dict):
                 info["active"] = False
@@ -329,7 +331,8 @@ def _write_login(username, account_token, app_id, bot_token, make_active=True):
     d["logins"] = logins
     d["web"] = True
     tmp = cfg + ".tmp"
-    json.dump(d, open(tmp, "w", encoding="utf-8"), indent=4, ensure_ascii=True)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=4, ensure_ascii=True)
     os.replace(tmp, cfg)
     return True
 

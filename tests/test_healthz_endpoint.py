@@ -1,5 +1,7 @@
 import sys
 import unittest
+import json
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,15 @@ import bridge  # noqa: E402
 
 
 class HealthzEndpointTests(unittest.TestCase):
+    def test_provision_selects_account_for_new_runtime(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(bridge, 'find_appdata', return_value=directory):
+            self.assertTrue(bridge._write_login('first', 'account', '123', 'bot'))
+            self.assertTrue(bridge._write_login('second', 'account2', '456', 'bot2', make_active=False))
+            data = json.loads((Path(directory) / 'nighty.config').read_text())
+            self.assertEqual(data['active_account'], 'first')
+            self.assertTrue(data['logins']['first']['active'])
+            self.assertFalse(data['logins']['second']['active'])
     def test_api_path_includes_healthz(self):
         # Create dummy request handler instance
         handler = bridge.H.__new__(bridge.H)
