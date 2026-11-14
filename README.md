@@ -32,7 +32,7 @@ graph LR
 ## Features
 
 - **Bring-Your-Own-Binary:** Just drop in your own `Nighty.exe`. Updates stay your choice (just re-run the installer with a newer exe).
-- **True Headless GUI Stub:** Repacks the executable with a no-op webview stub so the backend + Web UI start silently without a renderable desktop. Licensing and protected code remain strictly untouched.
+- **Headless GUI Adapter:** Repacks the executable with a no-op webview stub and an offscreen Qt runtime hook so the backend + Web UI start without a renderable desktop. Licensing and protected code remain untouched.
 - **Configurable Web UI Login:** You set the username/password in `.env`.
 - **Always-On Web UI (Hard Enforcement):** If Nighty or the user disables the Web UI, the guard forces it back on instantly so you never lose control of your headless bot.
 - **Quiet Mode by Default:** Every `toast` and `sound` option is automatically disabled before each launch.
@@ -52,7 +52,7 @@ You only need three things — **the installer handles the rest**:
 > [!NOTE]
 > The `scripts/install.sh` script checks what is already present and **installs only what is missing**:
 > - Base tools (curl/tar/xz/gnupg), **Python 3**, **Xvfb**, and **`uv`**.
-> - On **x86-64**: **Wine** (version 10 or newer). If your distro Wine is too old (Ubuntu 22.04/24.04), it transparently falls back to a self-contained static Wine build. Your system Wine is untouched.
+> - On **x86-64**: **Wine 11.5 or newer**. If your distro Wine is too old, it falls back to a self-contained static Wine 11.5 WoW64 build. Your system Wine is untouched.
 > - On **non-x86** (ARM): **Box64** plus a static x86-64 Wine build. Hardware is detected automatically.
 
 *Re-running the installer is completely safe: anything already set up is detected and skipped.*
@@ -264,10 +264,10 @@ If you ever encounter an issue or need help, share the files from your **`diagno
 <details>
 <summary><b>Click to view advanced troubleshooting & bug fixes...</b></summary>
 
-- **Repack fails / "bad marshal data"**: The repack must run under Python 3.8. Let `install.sh` use the `uv`-provided 3.8 interpreter.
+- **Repack fails / "bad marshal data"**: The repack must use the Python version embedded in your EXE. Re-run `install.sh` to detect it and fetch a matching interpreter via `uv`.
 - **Backend never opens 8090**: It only starts after a successful login. Open the bridge and complete the onboarding flow.
 - **Disk usage grows after repeated backend restarts**: Forced watchdog exits cannot remove Nighty's `_MEI*` extraction directory. `run.sh` now removes stale directories automatically. To clean manually, stop Nighty and run `bash scripts/cleanup_mei.sh`.
-- **On x86-64, the backend hangs at startup (no `[STUBWV]` logs)**: Your distro Wine is too old (Wine 6-9). The installer detects this and falls back to a static Wine 10 build automatically. Re-run `bash scripts/install.sh`.
+- **On x86-64, the backend hangs at startup (no `[STUBWV]` logs)**: Your distro Wine may be too old. Current Nighty requires Wine 11.5 or newer; the installer falls back to a static Wine 11.5 WoW64 build. Re-run `bash scripts/install.sh`.
 - **On non-x86 hosts, Wine crashes with illegal-instruction**: You need a recent **Box64** built for your CPU.
 - **The menu prints but typing `1`/`2` does nothing**: You backgrounded `run.sh` with `&`. Run it in the foreground, or use `bash scripts/run.sh once`.
 - **Backend keeps exiting / "Disconnected - Reconnecting"**: Make sure the headless DLL overrides are active (`run.sh` sets `WINEDLLOVERRIDES`).

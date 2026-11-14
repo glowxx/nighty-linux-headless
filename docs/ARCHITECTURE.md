@@ -40,7 +40,7 @@ graph LR
 
 ### 1. Headless GUI Stub (`scripts/repack.py`)
 
-PyInstaller stores Python modules in a `PYZ` archive inside the exe. `repack.py` parses the `CArchive`/`PYZ`, **replaces only the `webview` package** with a drop-in stub, copies everything else byte-for-byte, and rewrites the archive with the original bootloader.
+PyInstaller stores Python modules in a `PYZ` archive inside the exe. `repack.py` parses the `CArchive`/`PYZ`, replaces the `webview` package with a drop-in stub, wraps the Qt runtime hook for offscreen operation when present, and rewrites the archive with the original bootloader. All other archive entries are preserved.
 
 The stub:
 - Implements the `webview` API surface (`create_window`, `start`, `Window`, events) as no-ops, so the program's startup path completes instead of crashing on GUI init.
@@ -51,7 +51,9 @@ The stub:
 > This does **not** touch Nighty's licensing or its protected code — it only swaps the GUI layer. You still need a valid Nighty license and your own exe.
 
 > [!NOTE]
-> The repack must run under **Python 3.8**, because the embedded code objects are 3.8 bytecode and the `marshal` format is version-specific. `install.sh` fetches a 3.8 interpreter via `uv` for this one step.
+> The repack must use the executable's **embedded Python version** because `marshal` bytecode is version-specific. `install.sh` reads the PyInstaller cookie and obtains the matching interpreter via `uv` (3.8 for older builds, 3.14 for the current build).
+
+Current Nighty also initializes PyQt6 before its WebView. The repacker preserves the original Qt runtime hook and adds a headless adapter: Qt uses the offscreen platform and a real primary-screen fallback. Wine 11.5 supplies the ICU DLL required by the new Qt build. The static runtime uses WoW64 so both x86-64 and ARM64 hosts avoid 32-bit Linux dependencies.
 
 ### 2. Config Enforcement (`scripts/enforce_config.py`)
 
@@ -141,7 +143,7 @@ Everything Nighty and this wrapper persist lives **outside the repository**, whi
 | `<repo>/Nighty.exe`, `Nighty_stub.exe` | your binary and the repacked stub (never committed) |
 | `/etc/systemd/system/nighty.service` | the autostart unit (if you enabled autostart) |
 
-**Generic tooling installed by `install.sh` if missing** — *not* Nighty-specific, so the uninstaller leaves it alone by default: `uv` (`~/.local/bin/uv`, with a Python 3.8 under `~/.local/share/uv` / `~/.cache/uv`), **Box64** (`/usr/bin/box64` + its apt repo files under `/etc/apt/`), and your distro's Wine packages.
+**Generic tooling installed by `install.sh` if missing** — *not* Nighty-specific, so the uninstaller leaves it alone by default: `uv` (`~/.local/bin/uv`, with the matching Python under `~/.local/share/uv` / `~/.cache/uv`), **Box64** (`/usr/bin/box64` + its apt repo files under `/etc/apt/`), and your distro's Wine packages.
 
 ---
 
