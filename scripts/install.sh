@@ -7,8 +7,8 @@
 #
 #  What it sets up (only if missing):
 #    • base tools (curl, tar, xz, gnupg)         • Python 3
-#    • Xvfb (virtual display)                     • uv (fetches Python 3.8)
-#    • x86-64:  Wine (native, from your distro — or a static build if it's <10)
+#    • Xvfb (virtual display)                     • uv (fetches matching Python)
+#    • x86-64:  Wine (native, from your distro — or a static build if it's <11.5)
 #    • non-x86: Box64  +  a static x86-64 Wine build (runs under Box64)
 #
 #  You only need to bring your own licensed Nighty.exe (it is never shipped).
@@ -134,7 +134,7 @@ ensure_wine_runtime_libs() {
   warn "Some native libraries required by Wine/Box64 are missing."
   python3 "$PREFLIGHT" libs || true
   if [ "$PM" = apt ]; then
-    local packages="libx11-6 libxext6 libxrender1 libxfixes3 libxrandr2 libxcomposite1 libxi6 libxcursor1 libxinerama1 libxkbregistry0"
+    local packages="libx11-6 libxext6 libxrender1 libxfixes3 libxrandr2 libxcomposite1 libxi6 libxcursor1 libxinerama1 libxkbregistry0 libegl1 libcups2"
     pm_refresh
     add "installing Wine/X11 runtime libraries"
     # shellcheck disable=SC2086
@@ -186,7 +186,7 @@ ensure tar  tar  "tar"
 ensure python3 python3 "Python 3"
 ensure Xvfb    xvfb    "Xvfb (virtual display)"
 
-# ── 3) uv (used to fetch Python 3.8 for the repack) ──────────────────────────
+# ── 3) uv (used to fetch the matching Python for the repack) ─────────────────
 if need uv; then
   ok "uv present"
 else
@@ -230,7 +230,7 @@ ensure_wine_x86() {
   # x86-64 normally runs Nighty under the distro's own Wine. BUT older Wine
   # HANGS Nighty during early startup — before the webview stub is even imported,
   # with no error, just a low-CPU stall (Ubuntu 22.04/24.04 ship Wine 6–9). Wine
-  # >=10 works. So: use the distro Wine only when it is new enough; if it is too
+  # Current Qt also requires ICU support from Wine >=11.5. If Wine is too
   # old (or absent) fall back to the same self-contained static build used on ARM
   # — which here runs natively, no Box64. The system Wine is left untouched.
   if ! need wine64 && ! need wine; then add "Wine missing"; pm_install wine; fi
@@ -238,11 +238,15 @@ ensure_wine_x86() {
   bin="$(command -v wine64 || command -v wine || true)"
   if [ -n "$bin" ]; then
     ver="$(wine_major "$bin")"
-    if [ "${ver:-0}" -ge 10 ] 2>/dev/null; then
+    # Qt in current Nighty needs icuuc.dll, introduced after Wine 11.0.
+    local version minor
+    version="$("$bin" --version 2>/dev/null | head -n1)"
+    minor="$(printf '%s' "$version" | sed -nE 's/.*wine-([0-9]+)\.([0-9]+).*/\2/p')"
+    if [ "${ver:-0}" -gt 11 ] || { [ "${ver:-0}" -eq 11 ] && [ "${minor:-0}" -ge 5 ]; }; then
       ok "Wine present and new enough (v$ver): $bin"
       WINE_BIN_RESOLVED="$bin"; return
     fi
-    warn "Distro Wine is v$ver — too old; Nighty hangs on Wine <10."
+    warn "Distro Wine is $version — current Nighty requires Wine >=11.5."
   else
     warn "Distro Wine is not available from your package manager."
   fi
@@ -302,7 +306,7 @@ ensure_box64() {
 }
 
 # Point WINE_BIN_RESOLVED at the static build's launcher: prefer wine64 (the
-# classic amd64 builds, incl. the 10.0 default used on ARM), but accept a lone
+# classic amd64 builds), but accept a lone
 # wine too (newer WoW64-only builds ship a single "wine"). Empty if neither.
 _resolve_static_wine_bin() { # <wine-dir>
   if   [ -x "$1/bin/wine64" ]; then WINE_BIN_RESOLVED="$1/bin/wine64"
@@ -313,17 +317,24 @@ _resolve_static_wine_bin() { # <wine-dir>
 ensure_wine_static_x86() {
   ensure xz xz "xz (extractor)"   # the static Wine tarball is .tar.xz
   ensure_wine_runtime_libs
-  local wdir="$NIGHTY_HOME/wine" ver="${WINE_VERSION:-10.0}"
+  local wdir="$NIGHTY_HOME/wine" ver="${WINE_VERSION:-11.5}"
   _resolve_static_wine_bin "$wdir"
-  if [ -n "$WINE_BIN_RESOLVED" ]; then ok "static x86-64 Wine present ($wdir)"; return; fi
+  if [ -n "$WINE_BIN_RESOLVED" ] && [ -f "$wdir/lib/wine/x86_64-windows/icuuc.dll" ]; then
+    ok "static x86-64 Wine with ICU support present ($wdir)"; return
+  fi
   add "static x86-64 Wine missing — downloading Wine $ver"
-  local url="https://github.com/Kron4ek/Wine-Builds/releases/download/${ver}/wine-${ver}-amd64.tar.xz"
+  local url="https://github.com/Kron4ek/Wine-Builds/releases/download/${ver}/wine-${ver}-amd64-wow64.tar.xz"
   local tgz="$NIGHTY_HOME/.wine-dl.tar.xz"
   info "Fetching $url"
   dl "$url" "$tgz" || die "Could not download Wine. Check your connection, or set WINE_VERSION to another release."
-  rm -rf "$wdir"; mkdir -p "$wdir"
+  local staging; staging="$(mktemp -d "$NIGHTY_HOME/.wine-install.XXXXXX")"
   info "Extracting Wine…"
-  tar -xf "$tgz" -C "$wdir" --strip-components=1 || die "Failed to extract the Wine tarball."
+  tar -xf "$tgz" -C "$staging" --strip-components=1 || die "Failed to extract the Wine tarball."
+  [ -f "$staging/lib/wine/x86_64-windows/icuuc.dll" ] || die "Wine $ver lacks icuuc.dll; use Wine >=11.5. Existing runtime was not changed."
+  if [ -e "$wdir" ]; then
+    mv "$wdir" "$wdir.backup.$(date +%s)" || die "Could not back up existing Wine."
+  fi
+  mv "$staging" "$wdir" || die "Could not activate Wine."
   rm -f "$tgz"
   _resolve_static_wine_bin "$wdir"
   [ -n "$WINE_BIN_RESOLVED" ] || die "Wine extracted but no wine/wine64 launcher was found in $wdir/bin."
@@ -363,15 +374,16 @@ else
   python3 "$PREFLIGHT" pe "$SRC" --require-x64 || die "ARM/Box64 requires a 64-bit x86-64 Nighty.exe."
 fi
 
-# ── 7) repack (must run under Python 3.8 — marshal format is version-specific) ─
-info "Ensuring Python 3.8 (via uv) for the repack…"
-uv python install 3.8 >/dev/null 2>&1 || true
-PY38="$(uv python find 3.8 2>/dev/null || true)"
-[ -n "$PY38" ] || die "Could not obtain Python 3.8 via uv."
-ok "Python 3.8: $PY38"
+# The stub bytecode must match the executable, independently of host architecture.
+REPACK_VERSION="$(python3 scripts/repack.py --python-version "$SRC")" || die "Could not detect Nighty's Python version."
+info "Ensuring Python $REPACK_VERSION (via uv) for the repack…"
+uv python install "$REPACK_VERSION" || die "Could not install Python $REPACK_VERSION via uv."
+REPACK_PYTHON="$(uv python find "$REPACK_VERSION" 2>/dev/null || true)"
+[ -n "$REPACK_PYTHON" ] || die "Could not obtain Python $REPACK_VERSION via uv."
+ok "Python $REPACK_VERSION: $REPACK_PYTHON"
 
 info "Repacking $(basename "$SRC") → $(basename "$OUT") (headless webview stub)…"
-NIGHTY_EXE="$SRC" NIGHTY_STUB="$OUT" "$PY38" scripts/repack.py "$SRC" "$OUT" || die "Repack failed."
+NIGHTY_EXE="$SRC" NIGHTY_STUB="$OUT" "$REPACK_PYTHON" scripts/repack.py "$SRC" "$OUT" || die "Repack failed."
 if [ "$IS_X86" = 1 ]; then
   python3 "$PREFLIGHT" pe "$OUT" || die "Generated stub failed PE validation."
 else

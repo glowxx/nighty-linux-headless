@@ -39,6 +39,8 @@ WINE_NATIVE_LIBS = (
     ("Xi", "libxi6", True),
     ("Xcursor", "libxcursor1", True),
     ("Xinerama", "libxinerama1", True),
+    ("EGL", "libegl1", True),
+    ("cups", "libcups2", True),
     ("xkbregistry", "libxkbregistry0", False),
 )
 
@@ -92,8 +94,8 @@ KNOWN_FAILURES = (
     (
         "bad-marshal-data",
         re.compile(r"bad marshal data"),
-        "The repack ran under the wrong Python. The embedded code objects are 3.8 bytecode and the "
-        "marshal format is version-specific; let install.sh use the uv-provided 3.8 interpreter.",
+        "The repack ran under the wrong Python. The marshal format is version-specific; "
+        "re-run install.sh to detect the executable's Python version and fetch a matching interpreter.",
     ),
     (
         "missing-license",

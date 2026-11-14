@@ -20,7 +20,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       ca-certificates curl wget tar xz-utils sudo python3 xvfb wine64 wine \
       libx11-6 libxext6 libxrender1 libxfixes3 libxrandr2 libxcomposite1 \
-      libxi6 libxcursor1 libxinerama1 libxkbregistry0 libsdl2-2.0-0; \
+      libxi6 libxcursor1 libxinerama1 libxkbregistry0 libsdl2-2.0-0 libegl1 libcups2; \
     if [ "$arch" = arm64 ]; then \
       apt-get install -y --no-install-recommends build-essential cmake; \
       mkdir -p /tmp/box64; \

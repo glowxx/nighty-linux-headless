@@ -35,6 +35,44 @@ def build_archive_with_toc(toc: bytes) -> bytes:
 
 
 class RepackOutputGuardTests(unittest.TestCase):
+    def test_mismatched_python_is_rejected_before_loading_bytecode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / 'Nighty.exe'
+            out = Path(tmp) / 'Nighty_stub.exe'
+            name = b'PYZ.pyz\0'
+            toc = ENTRY.pack(ENTRY.size + len(name), 0, 0, 0, 0, b'z') + name
+            archive = bytearray(build_archive_with_toc(toc))
+            version = 314 if sys.version_info[:2] != (3, 14) else 38
+            struct.pack_into('!I', archive, len(archive) - 68, version)
+            src.write_bytes(archive)
+            result = run_repack(src, out)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('repack requires Python', result.stderr)
+            self.assertFalse(out.exists())
+
+    def test_version_detection_rejects_missing_or_truncated_cookie(self) -> None:
+        for payload in (b'MZ', b'MZ' + COOKIE_MAGIC):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp) / 'Nighty.exe'
+                src.write_bytes(payload)
+                result = subprocess.run(
+                    [sys.executable, str(REPACK), '--python-version', str(src)],
+                    capture_output=True, text=True, timeout=REPACK_TIMEOUT)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('cookie not found or truncated', result.stderr)
+
+    def test_reports_embedded_python_without_loading_bytecode(self) -> None:
+        for version, expected in ((38, '3.8'), (314, '3.14')):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp) / 'Nighty.exe'
+                archive = bytearray(build_archive_with_toc(b''))
+                struct.pack_into('!I', archive, len(archive) - 68, version)
+                src.write_bytes(archive)
+                result = subprocess.run([sys.executable, str(REPACK), '--python-version', str(src)],
+                                        capture_output=True, text=True, timeout=REPACK_TIMEOUT)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+
     def test_refuses_to_write_over_the_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "Nighty.exe"
